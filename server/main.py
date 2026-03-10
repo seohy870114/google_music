@@ -56,6 +56,7 @@ def progress_hook(d, task_id):
         except:
             pass
     elif d['status'] == 'finished':
+        # yt-dlp finished downloading, now it might be post-processing (FFmpeg)
         download_tasks[task_id]["progress"] = 100
         download_tasks[task_id]["status"] = "processing"
 
@@ -63,7 +64,6 @@ def run_download(url: str, format_type: str, task_id: str):
     task_dir = os.path.join(DOWNLOAD_ROOT, task_id)
     os.makedirs(task_dir, exist_ok=True)
     
-    # Use video ID as filename to avoid special character issues
     if format_type == "mp3":
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -90,6 +90,7 @@ def run_download(url: str, format_type: str, task_id: str):
             video_id = info.get('id')
             ext = "mp3" if format_type == "mp3" else info.get('ext', 'mp4')
             
+            # Final status update after all processing is done
             download_tasks[task_id].update({
                 "status": "completed",
                 "progress": 100,
@@ -118,7 +119,21 @@ def download_media(request: DownloadRequest, background_tasks: BackgroundTasks):
 def get_status(task_id: str):
     if task_id not in download_tasks:
         raise HTTPException(status_code=404, detail="Task not found")
-    return download_tasks[task_id]
+    
+    task = download_tasks[task_id]
+    
+    # Optimization: If file already exists in completed state, return immediately
+    if task["status"] == "completed":
+        return task
+        
+    # Double check if file exists on disk even if status hasn't updated yet
+    if task["filename"]:
+        file_path = os.path.join(DOWNLOAD_ROOT, task_id, task["filename"])
+        if os.path.exists(file_path) and task["status"] == "processing":
+            task["status"] = "completed"
+            task["progress"] = 100
+            
+    return task
 
 @app.get("/files/{task_id}/{filename}")
 async def get_file(task_id: str, filename: str):
@@ -134,18 +149,15 @@ def cleanup_loop():
             for task_id in os.listdir(DOWNLOAD_ROOT):
                 path = os.path.join(DOWNLOAD_ROOT, task_id)
                 if os.path.isdir(path):
-                    # Check if the directory is older than 1 hour
                     if os.stat(path).st_mtime < now - 3600:
                         try:
                             shutil.rmtree(path)
-                            # Also clean up the in-memory task status if it exists
                             if task_id in download_tasks:
                                 del download_tasks[task_id]
-                        except Exception as e:
-                            print(f"Cleanup error for {task_id}: {e}")
-        time.sleep(600) # Run every 10 minutes
+                        except:
+                            pass
+        time.sleep(600)
 
-# Start cleanup thread
 threading.Thread(target=cleanup_loop, daemon=True).start()
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 
 class HomeViewModel(
     private val settingsRepository: SettingsRepository,
@@ -86,11 +87,20 @@ class HomeViewModel(
     }
 
     private suspend fun pollStatus(context: Context, taskId: String, apiService: com.example.googlemusic.data.network.ApiService) {
+        var retryCount = 0
+        val maxRetries = 5
+
         while (true) {
             try {
                 val statusResponse = apiService.getStatus(taskId)
+                retryCount = 0 // Reset retry count on success
+                
                 downloadProgress = statusResponse.progress / 100f
-                downloadStatus = "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
+                downloadStatus = if (statusResponse.status == "processing") {
+                    "Server: Processing (FFmpeg)..."
+                } else {
+                    "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
+                }
                 
                 if (statusResponse.status == "completed") {
                     val serverFilename = statusResponse.filename
@@ -108,10 +118,17 @@ class HomeViewModel(
                     break
                 }
             } catch (e: Exception) {
-                errorMessage = "Status check failed: ${e.message}"
-                break
+                if (e is IOException && retryCount < maxRetries) {
+                    retryCount++
+                    downloadStatus = "Connection lost. Retrying ($retryCount/$maxRetries)..."
+                    delay(2000)
+                    continue
+                } else {
+                    errorMessage = "Status check failed: ${e.message}"
+                    break
+                }
             }
-            delay(1000)
+            delay(1500)
         }
     }
 
@@ -133,7 +150,6 @@ class HomeViewModel(
                     val body = response.body()
                     if (body != null) {
                         val finalFile = withContext(Dispatchers.IO) {
-                            // Sanitize title for filename
                             val sanitizedTitle = userTitle.replace(Regex("[\\\\/:*?\"<>|]"), "_")
                             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                             
