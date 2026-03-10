@@ -93,9 +93,12 @@ class HomeViewModel(
                 downloadStatus = "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
                 
                 if (statusResponse.status == "completed") {
-                    val filename = statusResponse.filename
-                    if (filename != null) {
-                        downloadToDevice(context, filename, apiService)
+                    val serverFilename = statusResponse.filename
+                    val ext = statusResponse.ext ?: "mp4"
+                    val userTitle = videoInfo?.title ?: "Downloaded_File"
+                    
+                    if (serverFilename != null) {
+                        downloadToDevice(context, taskId, serverFilename, userTitle, ext, apiService)
                     } else {
                         downloadStatus = "Success! (Filename missing)"
                     }
@@ -112,24 +115,38 @@ class HomeViewModel(
         }
     }
 
-    private fun downloadToDevice(context: Context, filename: String, apiService: com.example.googlemusic.data.network.ApiService) {
+    private fun downloadToDevice(
+        context: Context, 
+        taskId: String, 
+        serverFilename: String, 
+        userTitle: String,
+        ext: String,
+        apiService: com.example.googlemusic.data.network.ApiService
+    ) {
         viewModelScope.launch {
             downloadStatus = "Downloading to phone..."
             downloadProgress = 0f
             
             try {
-                val response = apiService.downloadFile(filename)
+                val response = apiService.downloadFile(taskId, serverFilename)
                 if (response.isSuccessful) {
                     val body = response.body()
                     if (body != null) {
-                        withContext(Dispatchers.IO) {
-                            val file = File(
-                                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                                filename
-                            )
+                        val finalFile = withContext(Dispatchers.IO) {
+                            // Sanitize title for filename
+                            val sanitizedTitle = userTitle.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                            
+                            var file = File(downloadsDir, "$sanitizedTitle.$ext")
+                            var count = 1
+                            while (file.exists()) {
+                                file = File(downloadsDir, "$sanitizedTitle ($count).$ext")
+                                count++
+                            }
+
                             val inputStream = body.byteStream()
                             val outputStream = FileOutputStream(file)
-                            val buffer = ByteArray(4096)
+                            val buffer = ByteArray(8192)
                             var bytesRead: Int
                             val fileSize = body.contentLength()
                             var totalBytesRead: Long = 0
@@ -145,9 +162,10 @@ class HomeViewModel(
                             }
                             outputStream.close()
                             inputStream.close()
+                            file
                         }
                         downloadStatus = "Success! Saved to Downloads"
-                        Toast.makeText(context, "휴대폰 저장 완료: $filename", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "휴대폰 저장 완료: ${finalFile.name}", Toast.LENGTH_LONG).show()
                     }
                 } else {
                     errorMessage = "File transfer failed: ${response.code()}"

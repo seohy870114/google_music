@@ -21,7 +21,8 @@ data class VideoInfoResponse(
     val title: String?,
     val thumbnail: String?,
     val duration: Int?,
-    val uploader: String?
+    val uploader: String?,
+    val video_id: String? = null
 )
 
 @Serializable
@@ -39,6 +40,7 @@ data class StatusResponse(
     val progress: Float,
     val title: String? = null,
     val filename: String? = null,
+    val ext: String? = null,
     val message: String? = null
 )
 
@@ -56,6 +58,9 @@ interface ApiService {
     suspend fun getStatus(@Path("task_id") taskId: String): StatusResponse
 
     @Streaming
-    @GET("/files/{filename}")
-    suspend fun downloadFile(@Path("filename") filename: String): Response<ResponseBody>
+    @GET("/files/{task_id}/{filename}")
+    suspend fun downloadFile(
+        @Path("task_id") taskId: String,
+        @Path("filename") filename: String
+    ): Response<ResponseBody>
 }

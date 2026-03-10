@@ -7,15 +7,17 @@ import os
 import uuid
 import time
 import shutil
+import threading
 
 app = FastAPI()
 
 # In-memory storage for download status
+# {task_id: {"status": "...", "progress": 0, "title": "", "filename": "", "ext": ""}}
 download_tasks = {}
 
-DOWNLOAD_DIR = "downloads"
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
+DOWNLOAD_ROOT = "downloads"
+if not os.path.exists(DOWNLOAD_ROOT):
+    os.makedirs(DOWNLOAD_ROOT)
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -40,13 +42,14 @@ def analyze_url(request: AnalyzeRequest):
                 "thumbnail": info.get('thumbnail'),
                 "duration": info.get('duration'),
                 "uploader": info.get('uploader'),
+                "video_id": info.get('id')
             }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 def progress_hook(d, task_id):
     if d['status'] == 'downloading':
-        p = d.get('_percent_str', '0%').replace('%','')
+        p = d.get('_percent_str', '0%').replace('%','').strip()
         try:
             download_tasks[task_id]["progress"] = float(p)
             download_tasks[task_id]["status"] = "downloading"
@@ -54,11 +57,13 @@ def progress_hook(d, task_id):
             pass
     elif d['status'] == 'finished':
         download_tasks[task_id]["progress"] = 100
-        download_tasks[task_id]["status"] = "completed"
-        # Store the actual filename
-        download_tasks[task_id]["filename"] = os.path.basename(d['info_dict']['get_path'])
+        download_tasks[task_id]["status"] = "processing"
 
 def run_download(url: str, format_type: str, task_id: str):
+    task_dir = os.path.join(DOWNLOAD_ROOT, task_id)
+    os.makedirs(task_dir, exist_ok=True)
+    
+    # Use video ID as filename to avoid special character issues
     if format_type == "mp3":
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -67,12 +72,14 @@ def run_download(url: str, format_type: str, task_id: str):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
+            'outtmpl': f'{task_dir}/%(id)s.%(ext)s',
+            'overwrites': True,
         }
     else:
         ydl_opts = {
-            'format': 'bestvideo+bestaudio/best',
-            'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': f'{task_dir}/%(id)s.%(ext)s',
+            'overwrites': True,
         }
     
     ydl_opts['progress_hooks'] = [lambda d: progress_hook(d, task_id)]
@@ -80,12 +87,16 @@ def run_download(url: str, format_type: str, task_id: str):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            download_tasks[task_id]["title"] = info.get('title', 'Unknown')
-            # If filename wasn't set in hook (e.g. for post-processed files)
-            if "filename" not in download_tasks[task_id]:
-                # yt-dlp internal logic for final filename
-                ext = "mp3" if format_type == "mp3" else info.get('ext')
-                download_tasks[task_id]["filename"] = f"{info.get('title')}.{ext}"
+            video_id = info.get('id')
+            ext = "mp3" if format_type == "mp3" else info.get('ext', 'mp4')
+            
+            download_tasks[task_id].update({
+                "status": "completed",
+                "progress": 100,
+                "title": info.get('title'),
+                "filename": f"{video_id}.{ext}",
+                "ext": ext
+            })
     except Exception as e:
         download_tasks[task_id]["status"] = "error"
         download_tasks[task_id]["message"] = str(e)
@@ -93,7 +104,13 @@ def run_download(url: str, format_type: str, task_id: str):
 @app.post("/download")
 def download_media(request: DownloadRequest, background_tasks: BackgroundTasks):
     task_id = str(uuid.uuid4())
-    download_tasks[task_id] = {"status": "pending", "progress": 0, "title": "", "filename": ""}
+    download_tasks[task_id] = {
+        "status": "pending", 
+        "progress": 0, 
+        "title": "", 
+        "filename": "",
+        "ext": ""
+    }
     background_tasks.add_task(run_download, request.url, request.format, task_id)
     return {"task_id": task_id}
 
@@ -103,36 +120,33 @@ def get_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     return download_tasks[task_id]
 
-def delete_file_later(path: str):
-    # Wait a bit to ensure the file handle is closed
-    time.sleep(10)
-    if os.path.exists(path):
-        os.remove(path)
-
-@app.get("/files/{filename}")
-async def get_file(filename: str, background_tasks: BackgroundTasks):
-    file_path = os.path.join(DOWNLOAD_DIR, filename)
+@app.get("/files/{task_id}/{filename}")
+async def get_file(task_id: str, filename: str):
+    file_path = os.path.join(DOWNLOAD_ROOT, task_id, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
-    
-    # Schedule deletion after transfer
-    background_tasks.add_task(delete_file_later, file_path)
     return FileResponse(path=file_path, filename=filename)
 
-# Periodic cleanup for old files (older than 1 hour)
-@app.on_event("startup")
-async def startup_event():
-    def cleanup():
-        while True:
-            now = time.time()
-            for f in os.listdir(DOWNLOAD_DIR):
-                path = os.path.join(DOWNLOAD_DIR, f)
-                if os.stat(path).st_mtime < now - 3600:
-                    os.remove(path)
-            time.sleep(600) # Run every 10 minutes
-    
-    import threading
-    threading.Thread(target=cleanup, daemon=True).start()
+def cleanup_loop():
+    while True:
+        now = time.time()
+        if os.path.exists(DOWNLOAD_ROOT):
+            for task_id in os.listdir(DOWNLOAD_ROOT):
+                path = os.path.join(DOWNLOAD_ROOT, task_id)
+                if os.path.isdir(path):
+                    # Check if the directory is older than 1 hour
+                    if os.stat(path).st_mtime < now - 3600:
+                        try:
+                            shutil.rmtree(path)
+                            # Also clean up the in-memory task status if it exists
+                            if task_id in download_tasks:
+                                del download_tasks[task_id]
+                        except Exception as e:
+                            print(f"Cleanup error for {task_id}: {e}")
+        time.sleep(600) # Run every 10 minutes
+
+# Start cleanup thread
+threading.Thread(target=cleanup_loop, daemon=True).start()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
