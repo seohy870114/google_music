@@ -39,7 +39,7 @@ fun HomeScreen() {
         downloadStatus = downloadStatus,
         errorMessage = errorMessage,
         onAnalyze = { viewModel.analyzeUrl(it) },
-        onDownload = { url, format -> viewModel.startDownload(url, format) }
+        onDownload = { url, format -> viewModel.startDownload(context, url, format) }
     )
 }
 

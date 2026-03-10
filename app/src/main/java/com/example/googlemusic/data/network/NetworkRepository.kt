@@ -26,7 +26,7 @@ class NetworkRepository {
         }.let { if (it.endsWith("/")) it else "$it/" }
         
         // Also need to handle cases where only IP is provided (default port 8000)
-        val finalUrl = if (!formattedUrl.contains(":", startIndex = 7)) {
+        val finalUrl = if (formattedUrl.indexOf(":", 7) == -1) {
             formattedUrl.replace("/", ":8000/")
         } else {
             formattedUrl
