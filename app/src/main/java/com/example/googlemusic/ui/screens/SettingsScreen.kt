@@ -1,5 +1,7 @@
 package com.example.googlemusic.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -8,26 +10,42 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.googlemusic.data.auth.AuthRepository
+import com.example.googlemusic.data.auth.AuthViewModel
 import com.example.googlemusic.data.repository.SettingsRepository
 import com.example.googlemusic.ui.settings.SettingsViewModel
 import com.example.googlemusic.ui.theme.GoogleMusicTheme
+import com.google.android.gms.auth.api.signin.GoogleSignIn
 
 @Composable
 fun SettingsScreen() {
     val context = LocalContext.current
-    // For now, initializing manually (will be replaced by DI later)
-    val viewModel = remember {
+    val settingsViewModel = remember {
         SettingsViewModel(SettingsRepository(context))
     }
+    val authViewModel = remember {
+        AuthViewModel(AuthRepository(context))
+    }
     
-    val savedServerIp by viewModel.serverIp.collectAsState()
-    val connectionStatus = viewModel.connectionStatus
-    
+    val savedServerIp by settingsViewModel.serverIp.collectAsState()
+    val connectionStatus = settingsViewModel.connectionStatus
+    val userAccount = authViewModel.userAccount
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        authViewModel.handleSignInResult(task)
+    }
+
     SettingsContent(
         savedServerIp = savedServerIp,
         connectionStatus = connectionStatus,
-        onSaveIp = { viewModel.updateServerIp(it) },
-        onCheckConnection = { viewModel.checkServerConnection() }
+        userEmail = userAccount?.email,
+        onSaveIp = { settingsViewModel.updateServerIp(it) },
+        onCheckConnection = { settingsViewModel.checkServerConnection() },
+        onSignIn = { launcher.launch(authViewModel.getSignInIntent()) },
+        onSignOut = { authViewModel.signOut() }
     )
 }
 
@@ -36,12 +54,14 @@ fun SettingsScreen() {
 fun SettingsContent(
     savedServerIp: String,
     connectionStatus: String?,
+    userEmail: String?,
     onSaveIp: (String) -> Unit,
-    onCheckConnection: () -> Unit
+    onCheckConnection: () -> Unit,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit
 ) {
     var serverIpInput by remember { mutableStateOf("") }
     
-    // Update local input when saved value changes (initially)
     LaunchedEffect(savedServerIp) {
         if (serverIpInput.isEmpty() && savedServerIp.isNotEmpty()) {
             serverIpInput = savedServerIp
@@ -91,16 +111,23 @@ fun SettingsContent(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-        Text(text = "Download Quality", style = MaterialTheme.typography.titleMedium)
-        // TODO: Dropdown for quality selection
-        
-        Spacer(modifier = Modifier.height(24.dp))
         Text(text = "Account", style = MaterialTheme.typography.titleMedium)
-        Button(
-            onClick = { /* TODO: Google Login/Logout */ },
-            modifier = Modifier.padding(top = 8.dp)
-        ) {
-            Text("Google Sign-In")
+        
+        if (userEmail != null) {
+            Text(text = "Signed in as: $userEmail", style = MaterialTheme.typography.bodyMedium)
+            Button(
+                onClick = onSignOut,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Sign Out")
+            }
+        } else {
+            Button(
+                onClick = onSignIn,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Google Sign-In")
+            }
         }
     }
 }
@@ -111,22 +138,12 @@ fun SettingsScreenPreview() {
     GoogleMusicTheme {
         SettingsContent(
             savedServerIp = "192.168.0.10",
-            connectionStatus = "Success: Google Music Server is running",
+            connectionStatus = "Success: Connected",
+            userEmail = "user@example.com",
             onSaveIp = {},
-            onCheckConnection = {}
-        )
-    }
-}
-
-@Preview(showBackground = true, showSystemUi = true, uiMode = android.content.res.Configuration.UI_MODE_NIGHT_YES)
-@Composable
-fun SettingsScreenDarkPreview() {
-    GoogleMusicTheme {
-        SettingsContent(
-            savedServerIp = "192.168.0.10",
-            connectionStatus = "Error: Connection refused",
-            onSaveIp = {},
-            onCheckConnection = {}
+            onCheckConnection = {},
+            onSignIn = {},
+            onSignOut = {}
         )
     }
 }

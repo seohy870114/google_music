@@ -8,11 +8,13 @@ import uuid
 import time
 import shutil
 import threading
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 app = FastAPI()
 
 # In-memory storage for download status
-# {task_id: {"status": "...", "progress": 0, "title": "", "filename": "", "ext": ""}}
 download_tasks = {}
 
 DOWNLOAD_ROOT = "downloads"
@@ -25,6 +27,10 @@ class AnalyzeRequest(BaseModel):
 class DownloadRequest(BaseModel):
     url: str
     format: str # "mp3" or "mp4"
+
+class DriveUploadRequest(BaseModel):
+    task_id: str
+    access_token: str
 
 @app.get("/")
 def read_root():
@@ -56,7 +62,6 @@ def progress_hook(d, task_id):
         except:
             pass
     elif d['status'] == 'finished':
-        # yt-dlp finished downloading, now it might be post-processing (FFmpeg)
         download_tasks[task_id]["progress"] = 100
         download_tasks[task_id]["status"] = "processing"
 
@@ -90,7 +95,6 @@ def run_download(url: str, format_type: str, task_id: str):
             video_id = info.get('id')
             ext = "mp3" if format_type == "mp3" else info.get('ext', 'mp4')
             
-            # Final status update after all processing is done
             download_tasks[task_id].update({
                 "status": "completed",
                 "progress": 100,
@@ -121,12 +125,9 @@ def get_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     
     task = download_tasks[task_id]
-    
-    # Optimization: If file already exists in completed state, return immediately
     if task["status"] == "completed":
         return task
         
-    # Double check if file exists on disk even if status hasn't updated yet
     if task["filename"]:
         file_path = os.path.join(DOWNLOAD_ROOT, task_id, task["filename"])
         if os.path.exists(file_path) and task["status"] == "processing":
@@ -141,6 +142,38 @@ async def get_file(task_id: str, filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path=file_path, filename=filename)
+
+def run_drive_upload(task_id: str, access_token: str):
+    task = download_tasks.get(task_id)
+    if not task or task["status"] != "completed":
+        return
+
+    file_path = os.path.join(DOWNLOAD_ROOT, task_id, task["filename"])
+    if not os.path.exists(file_path):
+        return
+
+    try:
+        download_tasks[task_id]["status"] = "uploading_to_drive"
+        creds = Credentials(token=access_token)
+        service = build('drive', 'v3', credentials=creds)
+
+        file_metadata = {'name': task["title"] + "." + task["ext"]}
+        media = MediaFileUpload(file_path, resumable=True)
+        
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        download_tasks[task_id]["status"] = "drive_completed"
+        download_tasks[task_id]["drive_file_id"] = file.get('id')
+    except Exception as e:
+        download_tasks[task_id]["status"] = "drive_error"
+        download_tasks[task_id]["message"] = str(e)
+
+@app.post("/upload/drive")
+def upload_to_drive(request: DriveUploadRequest, background_tasks: BackgroundTasks):
+    if request.task_id not in download_tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    background_tasks.add_task(run_drive_upload, request.task_id, request.access_token)
+    return {"status": "upload_started"}
 
 def cleanup_loop():
     while True:

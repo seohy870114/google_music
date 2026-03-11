@@ -14,23 +14,32 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.example.googlemusic.data.auth.AuthRepository
+import com.example.googlemusic.data.auth.AuthViewModel
 import com.example.googlemusic.data.network.VideoInfoResponse
 import com.example.googlemusic.data.repository.SettingsRepository
 import com.example.googlemusic.ui.home.HomeViewModel
 import com.example.googlemusic.ui.theme.GoogleMusicTheme
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen() {
     val context = LocalContext.current
-    val viewModel = remember {
+    val scope = rememberCoroutineScope()
+    val homeViewModel = remember {
         HomeViewModel(SettingsRepository(context))
     }
+    val authViewModel = remember {
+        AuthViewModel(AuthRepository(context))
+    }
     
-    val videoInfo = viewModel.videoInfo
-    val isAnalyzing = viewModel.isAnalyzing
-    val downloadProgress = viewModel.downloadProgress
-    val downloadStatus = viewModel.downloadStatus
-    val errorMessage = viewModel.errorMessage
+    val videoInfo = homeViewModel.videoInfo
+    val isAnalyzing = homeViewModel.isAnalyzing
+    val downloadProgress = homeViewModel.downloadProgress
+    val downloadStatus = homeViewModel.downloadStatus
+    val errorMessage = homeViewModel.errorMessage
+    val currentTaskId = homeViewModel.currentTaskId
+    val userAccount = authViewModel.userAccount
 
     HomeContent(
         videoInfo = videoInfo,
@@ -38,8 +47,17 @@ fun HomeScreen() {
         downloadProgress = downloadProgress,
         downloadStatus = downloadStatus,
         errorMessage = errorMessage,
-        onAnalyze = { viewModel.analyzeUrl(it) },
-        onDownload = { url, format -> viewModel.startDownload(context, url, format) }
+        canUploadToDrive = currentTaskId != null && userAccount != null,
+        onAnalyze = { homeViewModel.analyzeUrl(it) },
+        onDownload = { url, format -> homeViewModel.startDownload(context, url, format) },
+        onUploadToDrive = {
+            scope.launch {
+                val token = authViewModel.getAccessToken()
+                if (token != null && currentTaskId != null) {
+                    homeViewModel.uploadToDrive(context, currentTaskId, token)
+                }
+            }
+        }
     )
 }
 
@@ -51,8 +69,10 @@ fun HomeContent(
     downloadProgress: Float,
     downloadStatus: String?,
     errorMessage: String?,
+    canUploadToDrive: Boolean,
     onAnalyze: (String) -> Unit,
-    onDownload: (String, String) -> Unit
+    onDownload: (String, String) -> Unit,
+    onUploadToDrive: () -> Unit
 ) {
     var url by remember { mutableStateOf("") }
 
@@ -123,6 +143,17 @@ fun HomeContent(
                             Text("MP4")
                         }
                     }
+                    
+                    if (canUploadToDrive) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onUploadToDrive,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF34A853))
+                        ) {
+                            Text("Upload to Google Drive")
+                        }
+                    }
                 }
             }
         }
@@ -149,7 +180,7 @@ fun HomeScreenPreview() {
         HomeContent(
             videoInfo = VideoInfoResponse(
                 url = "https://youtube.com/...",
-                title = "Sample Video Title that might be very long and wrap",
+                title = "Sample Video Title",
                 thumbnail = null,
                 duration = 300,
                 uploader = "Sample Artist"
@@ -158,24 +189,10 @@ fun HomeScreenPreview() {
             downloadProgress = 0.45f,
             downloadStatus = "Status: downloading",
             errorMessage = null,
+            canUploadToDrive = true,
             onAnalyze = {},
-            onDownload = { _, _ -> }
-        )
-    }
-}
-
-@Preview(showBackground = true, showSystemUi = true, uiMode = android.content.res.Configuration.UI_MODE_NIGHT_YES)
-@Composable
-fun HomeScreenDarkPreview() {
-    GoogleMusicTheme {
-        HomeContent(
-            videoInfo = null,
-            isAnalyzing = true,
-            downloadProgress = 0f,
-            downloadStatus = null,
-            errorMessage = "Analysis failed: connection refused",
-            onAnalyze = {},
-            onDownload = { _, _ -> }
+            onDownload = { _, _ -> },
+            onUploadToDrive = {}
         )
     }
 }

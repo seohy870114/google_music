@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.googlemusic.data.network.AnalyzeRequest
 import com.example.googlemusic.data.network.DownloadRequest
+import com.example.googlemusic.data.network.DriveUploadRequest
 import com.example.googlemusic.data.network.NetworkRepository
 import com.example.googlemusic.data.network.VideoInfoResponse
 import com.example.googlemusic.data.repository.SettingsRepository
@@ -40,6 +41,9 @@ class HomeViewModel(
         private set
 
     var errorMessage by mutableStateOf<String?>(null)
+        private set
+    
+    var currentTaskId by mutableStateOf<String?>(null)
         private set
 
     fun analyzeUrl(url: String) {
@@ -72,12 +76,14 @@ class HomeViewModel(
             errorMessage = null
             downloadProgress = 0f
             downloadStatus = "Starting download on server..."
+            currentTaskId = null
             
             val ip = settingsRepository.serverIpFlow.first()
             val apiService = networkRepository.getApiService(ip) ?: return@launch
 
             try {
                 val response = apiService.downloadMedia(DownloadRequest(url, format))
+                currentTaskId = response.task_id
                 pollStatus(context, response.task_id, apiService)
             } catch (e: Exception) {
                 errorMessage = "Download failed: ${e.message}"
@@ -93,28 +99,30 @@ class HomeViewModel(
         while (true) {
             try {
                 val statusResponse = apiService.getStatus(taskId)
-                retryCount = 0 // Reset retry count on success
+                retryCount = 0 
                 
                 downloadProgress = statusResponse.progress / 100f
                 downloadStatus = if (statusResponse.status == "processing") {
                     "Server: Processing (FFmpeg)..."
+                } else if (statusResponse.status == "uploading_to_drive") {
+                    "Server: Uploading to Drive..."
+                } else if (statusResponse.status == "drive_completed") {
+                    "Success! Uploaded to Google Drive."
                 } else {
                     "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
                 }
                 
                 if (statusResponse.status == "completed") {
-                    val serverFilename = statusResponse.filename
-                    val ext = statusResponse.ext ?: "mp4"
-                    val userTitle = videoInfo?.title ?: "Downloaded_File"
-                    
-                    if (serverFilename != null) {
-                        downloadToDevice(context, taskId, serverFilename, userTitle, ext, apiService)
-                    } else {
-                        downloadStatus = "Success! (Filename missing)"
-                    }
+                    // Stop polling if we just wanted local download
+                    // But if we want to support drive upload, we might continue
+                    // For now, let's say "completed" is a stopping point for status checks
+                    // unless a drive upload is explicitly triggered.
+                    downloadStatus = "Server: Download completed."
                     break
-                } else if (statusResponse.status == "error") {
-                    errorMessage = statusResponse.message ?: "Server error during download"
+                } else if (statusResponse.status == "drive_completed") {
+                    break
+                } else if (statusResponse.status == "error" || statusResponse.status == "drive_error") {
+                    errorMessage = statusResponse.message ?: "Server error during task"
                     break
                 }
             } catch (e: Exception) {
@@ -132,15 +140,17 @@ class HomeViewModel(
         }
     }
 
-    private fun downloadToDevice(
+    fun downloadToDevice(
         context: Context, 
         taskId: String, 
         serverFilename: String, 
         userTitle: String,
-        ext: String,
-        apiService: com.example.googlemusic.data.network.ApiService
+        ext: String
     ) {
         viewModelScope.launch {
+            val ip = settingsRepository.serverIpFlow.first()
+            val apiService = networkRepository.getApiService(ip) ?: return@launch
+            
             downloadStatus = "Downloading to phone..."
             downloadProgress = 0f
             
@@ -189,6 +199,29 @@ class HomeViewModel(
             } catch (e: Exception) {
                 errorMessage = "Transfer failed: ${e.message}"
             }
+        }
+    }
+
+    fun uploadToDrive(context: Context, taskId: String, accessToken: String) {
+        viewModelScope.launch {
+            downloadStatus = "Requesting Drive upload..."
+            val ip = settingsRepository.serverIpFlow.first()
+            val apiService = networkRepository.getApiService(ip) ?: return@launch
+
+            try {
+                apiService.uploadToDrive(DriveUploadRequest(taskId, accessToken))
+                pollStatus(context, taskId, apiService)
+            } catch (e: Exception) {
+                errorMessage = "Drive upload request failed: ${e.message}"
+            }
+        }
+    }
+    
+    fun fetchStatusManually(context: Context, taskId: String) {
+        viewModelScope.launch {
+            val ip = settingsRepository.serverIpFlow.first()
+            val apiService = networkRepository.getApiService(ip) ?: return@launch
+            pollStatus(context, taskId, apiService)
         }
     }
 }

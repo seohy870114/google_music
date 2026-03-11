@@ -3,17 +3,16 @@ package com.example.googlemusic.data.network
 import kotlinx.serialization.Serializable
 import okhttp3.ResponseBody
 import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.GET
-import retrofit2.http.POST
-import retrofit2.http.Path
-import retrofit2.http.Streaming
+import retrofit2.http.*
 
 @Serializable
 data class AnalyzeRequest(val url: String)
 
 @Serializable
 data class DownloadRequest(val url: String, val format: String)
+
+@Serializable
+data class DriveUploadRequest(val task_id: String, val access_token: String)
 
 @Serializable
 data class VideoInfoResponse(
@@ -44,6 +43,9 @@ data class StatusResponse(
     val message: String? = null
 )
 
+@Serializable
+data class GenericResponse(val status: String)
+
 interface ApiService {
     @GET("/")
     suspend fun checkHealth(): HealthCheckResponse
@@ -63,4 +65,7 @@ interface ApiService {
         @Path("task_id") taskId: String,
         @Path("filename") filename: String
     ): Response<ResponseBody>
+
+    @POST("/upload/drive")
+    suspend fun uploadToDrive(@Body request: DriveUploadRequest): GenericResponse
 }
