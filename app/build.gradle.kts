@@ -43,6 +43,12 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "META-INF/DEPENDENCIES"
+            excludes += "META-INF/LICENSE*"
+            excludes += "META-INF/NOTICE*"
+            excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/io.netty.versions.properties"
+            excludes += "META-INF/ASL2.0"
         }
     }
 }
@@ -61,11 +67,12 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.5.0")
 
     // Phase 2: Server Communication & Auth
-    // DataStore
     implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("com.google.android.gms:play-services-auth:20.7.0")
 
-    // Google Auth
-    implementation("com.google.android.gms:play-services-auth:21.0.0")
+    // Phase 5: Google Drive API
+    implementation("com.google.api-client:google-api-client-android:2.2.0")
+    implementation("com.google.apis:google-api-services-drive:v3-rev197-1.25.0")
 
     // Retrofit & OkHttp
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
