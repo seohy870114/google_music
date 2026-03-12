@@ -182,7 +182,8 @@ def cleanup_loop():
             for task_id in os.listdir(DOWNLOAD_ROOT):
                 path = os.path.join(DOWNLOAD_ROOT, task_id)
                 if os.path.isdir(path):
-                    if os.stat(path).st_mtime < now - 3600:
+                    # Keep files for at least 30 minutes for cloud upload requests
+                    if os.stat(path).st_mtime < now - 1800:
                         try:
                             shutil.rmtree(path)
                             if task_id in download_tasks:

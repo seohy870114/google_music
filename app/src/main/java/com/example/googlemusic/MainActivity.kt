@@ -7,14 +7,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.example.googlemusic.navigation.NavGraph
+import com.example.googlemusic.data.auth.AuthRepository
+import com.example.googlemusic.data.auth.AuthViewModel
+import com.example.googlemusic.data.auth.AuthViewModelFactory
+import com.example.googlemusic.data.repository.SettingsRepository
 import com.example.googlemusic.navigation.Screen
+import com.example.googlemusic.ui.home.HomeViewModel
+import com.example.googlemusic.ui.home.HomeViewModelFactory
+import com.example.googlemusic.ui.library.LibraryViewModel
+import com.example.googlemusic.ui.screens.HomeScreen
+import com.example.googlemusic.ui.screens.LibraryScreen
+import com.example.googlemusic.ui.screens.SettingsScreen
 import com.example.googlemusic.ui.theme.GoogleMusicTheme
 
 class MainActivity : ComponentActivity() {
@@ -36,6 +48,14 @@ fun MainScreen() {
         Screen.Library,
         Screen.Settings
     )
+
+    // Shared ViewModels to persist state across navigation
+    val settingsRepository = SettingsRepository(androidx.compose.ui.platform.LocalContext.current)
+    val authRepository = AuthRepository(androidx.compose.ui.platform.LocalContext.current)
+    
+    val homeViewModel: HomeViewModel = viewModel(factory = HomeViewModelFactory(settingsRepository))
+    val authViewModel: AuthViewModel = viewModel(factory = AuthViewModelFactory(authRepository))
+    val libraryViewModel: LibraryViewModel = viewModel()
 
     Scaffold(
         bottomBar = {
@@ -65,23 +85,17 @@ fun MainScreen() {
             modifier = Modifier.padding(innerPadding),
             color = MaterialTheme.colorScheme.background
         ) {
-            NavGraph(navController = navController)
+            NavHost(navController = navController, startDestination = Screen.Home.route) {
+                composable(Screen.Home.route) {
+                    HomeScreen(homeViewModel, authViewModel)
+                }
+                composable(Screen.Library.route) {
+                    LibraryScreen(libraryViewModel, authViewModel)
+                }
+                composable(Screen.Settings.route) {
+                    SettingsScreen(settingsRepository, authViewModel)
+                }
+            }
         }
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MainScreenPreview() {
-    GoogleMusicTheme {
-        MainScreen()
-    }
-}
-
-@Preview(showBackground = true, uiMode = android.content.res.Configuration.UI_MODE_NIGHT_YES)
-@Composable
-fun MainScreenDarkPreview() {
-    GoogleMusicTheme {
-        MainScreen()
     }
 }

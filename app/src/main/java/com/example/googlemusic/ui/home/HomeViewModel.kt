@@ -8,11 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.googlemusic.data.network.AnalyzeRequest
-import com.example.googlemusic.data.network.DownloadRequest
-import com.example.googlemusic.data.network.DriveUploadRequest
-import com.example.googlemusic.data.network.NetworkRepository
-import com.example.googlemusic.data.network.VideoInfoResponse
+import com.example.googlemusic.data.network.*
 import com.example.googlemusic.data.repository.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -28,6 +24,8 @@ class HomeViewModel(
     private val networkRepository: NetworkRepository = NetworkRepository()
 ) : ViewModel() {
 
+    var urlInput by mutableStateOf("")
+    
     var videoInfo by mutableStateOf<VideoInfoResponse?>(null)
         private set
 
@@ -46,11 +44,15 @@ class HomeViewModel(
     var currentTaskId by mutableStateOf<String?>(null)
         private set
 
+    var isServerDownloadComplete by mutableStateOf(false)
+        private set
+
     fun analyzeUrl(url: String) {
         viewModelScope.launch {
             isAnalyzing = true
             errorMessage = null
             videoInfo = null
+            isServerDownloadComplete = false
             
             val ip = settingsRepository.serverIpFlow.first()
             val apiService = networkRepository.getApiService(ip)
@@ -77,6 +79,7 @@ class HomeViewModel(
             downloadProgress = 0f
             downloadStatus = "Starting download on server..."
             currentTaskId = null
+            isServerDownloadComplete = false
             
             val ip = settingsRepository.serverIpFlow.first()
             val apiService = networkRepository.getApiService(ip) ?: return@launch
@@ -92,7 +95,7 @@ class HomeViewModel(
         }
     }
 
-    private suspend fun pollStatus(context: Context, taskId: String, apiService: com.example.googlemusic.data.network.ApiService) {
+    private suspend fun pollStatus(context: Context, taskId: String, apiService: ApiService) {
         var retryCount = 0
         val maxRetries = 5
 
@@ -102,22 +105,22 @@ class HomeViewModel(
                 retryCount = 0 
                 
                 downloadProgress = statusResponse.progress / 100f
-                downloadStatus = if (statusResponse.status == "processing") {
-                    "Server: Processing (FFmpeg)..."
-                } else if (statusResponse.status == "uploading_to_drive") {
-                    "Server: Uploading to Drive..."
-                } else if (statusResponse.status == "drive_completed") {
-                    "Success! Uploaded to Google Drive."
-                } else {
-                    "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
+                downloadStatus = when (statusResponse.status) {
+                    "processing" -> "Server: Processing (FFmpeg)..."
+                    "uploading_to_drive" -> "Server: Uploading to Drive..."
+                    "drive_completed" -> "Success! Uploaded to Google Drive."
+                    else -> "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
                 }
                 
                 if (statusResponse.status == "completed") {
-                    // Stop polling if we just wanted local download
-                    // But if we want to support drive upload, we might continue
-                    // For now, let's say "completed" is a stopping point for status checks
-                    // unless a drive upload is explicitly triggered.
-                    downloadStatus = "Server: Download completed."
+                    isServerDownloadComplete = true
+                    val serverFilename = statusResponse.filename
+                    val ext = statusResponse.ext ?: "mp4"
+                    val userTitle = videoInfo?.title ?: "Downloaded_File"
+                    
+                    if (serverFilename != null) {
+                        downloadToDevice(context, taskId, serverFilename, userTitle, ext, apiService)
+                    }
                     break
                 } else if (statusResponse.status == "drive_completed") {
                     break
@@ -140,17 +143,15 @@ class HomeViewModel(
         }
     }
 
-    fun downloadToDevice(
+    private fun downloadToDevice(
         context: Context, 
         taskId: String, 
         serverFilename: String, 
         userTitle: String,
-        ext: String
+        ext: String,
+        apiService: ApiService
     ) {
         viewModelScope.launch {
-            val ip = settingsRepository.serverIpFlow.first()
-            val apiService = networkRepository.getApiService(ip) ?: return@launch
-            
             downloadStatus = "Downloading to phone..."
             downloadProgress = 0f
             
@@ -159,7 +160,7 @@ class HomeViewModel(
                 if (response.isSuccessful) {
                     val body = response.body()
                     if (body != null) {
-                        val finalFile = withContext(Dispatchers.IO) {
+                        withContext(Dispatchers.IO) {
                             val sanitizedTitle = userTitle.replace(Regex("[\\\\/:*?\"<>|]"), "_")
                             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                             
@@ -188,40 +189,27 @@ class HomeViewModel(
                             }
                             outputStream.close()
                             inputStream.close()
-                            file
                         }
                         downloadStatus = "Success! Saved to Downloads"
-                        Toast.makeText(context, "휴대폰 저장 완료: ${finalFile.name}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "휴대폰 저장 완료", Toast.LENGTH_SHORT).show()
                     }
-                } else {
-                    errorMessage = "File transfer failed: ${response.code()}"
                 }
             } catch (e: Exception) {
-                errorMessage = "Transfer failed: ${e.message}"
+                errorMessage = "Device download failed: ${e.message}"
             }
         }
     }
 
     fun uploadToDrive(context: Context, taskId: String, accessToken: String) {
         viewModelScope.launch {
-            downloadStatus = "Requesting Drive upload..."
             val ip = settingsRepository.serverIpFlow.first()
             val apiService = networkRepository.getApiService(ip) ?: return@launch
-
             try {
                 apiService.uploadToDrive(DriveUploadRequest(taskId, accessToken))
                 pollStatus(context, taskId, apiService)
             } catch (e: Exception) {
-                errorMessage = "Drive upload request failed: ${e.message}"
+                errorMessage = "Drive upload failed: ${e.message}"
             }
-        }
-    }
-    
-    fun fetchStatusManually(context: Context, taskId: String) {
-        viewModelScope.launch {
-            val ip = settingsRepository.serverIpFlow.first()
-            val apiService = networkRepository.getApiService(ip) ?: return@launch
-            pollStatus(context, taskId, apiService)
         }
     }
 }

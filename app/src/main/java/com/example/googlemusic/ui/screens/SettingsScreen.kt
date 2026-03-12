@@ -10,7 +10,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.example.googlemusic.data.auth.AuthRepository
 import com.example.googlemusic.data.auth.AuthViewModel
 import com.example.googlemusic.data.repository.SettingsRepository
 import com.example.googlemusic.ui.settings.SettingsViewModel
@@ -18,13 +17,10 @@ import com.example.googlemusic.ui.theme.GoogleMusicTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(settingsRepository: SettingsRepository, authViewModel: AuthViewModel) {
     val context = LocalContext.current
     val settingsViewModel = remember {
-        SettingsViewModel(SettingsRepository(context))
-    }
-    val authViewModel = remember {
-        AuthViewModel(AuthRepository(context))
+        SettingsViewModel(settingsRepository)
     }
     
     val savedServerIp by settingsViewModel.serverIp.collectAsState()
@@ -129,21 +125,5 @@ fun SettingsContent(
                 Text("Google Sign-In")
             }
         }
-    }
-}
-
-@Preview(showBackground = true, showSystemUi = true)
-@Composable
-fun SettingsScreenPreview() {
-    GoogleMusicTheme {
-        SettingsContent(
-            savedServerIp = "192.168.0.10",
-            connectionStatus = "Success: Connected",
-            userEmail = "user@example.com",
-            onSaveIp = {},
-            onCheckConnection = {},
-            onSignIn = {},
-            onSignOut = {}
-        )
     }
 }
