@@ -1,5 +1,6 @@
 package com.example.googlemusic.data.auth
 
+import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -10,6 +11,8 @@ import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.tasks.Task
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.FileContent
+import com.google.api.client.http.javanet.NetHttpTransport
+import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
 import com.google.api.services.drive.model.File
@@ -49,7 +52,7 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
         }
     }
 
-    fun uploadFileToDrive(context: android.content.Context, filePath: String) {
+    fun uploadFileToDrive(context: Context, filePath: String) {
         val account = userAccount?.account ?: return
         viewModelScope.launch {
             uploadStatus = "Preparing upload..."
@@ -60,8 +63,8 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
                     ).setSelectedAccount(account)
 
                     val googleDriveService = Drive.Builder(
-                        com.google.api.client.extensions.android.http.AndroidHttp.newCompatibleTransport(),
-                        com.google.api.client.json.gson.GsonFactory.getDefaultInstance(),
+                        NetHttpTransport(),
+                        GsonFactory.getDefaultInstance(),
                         credential
                     ).setApplicationName("Google Music").build()
 

@@ -24,9 +24,8 @@ import com.example.googlemusic.navigation.Screen
 import com.example.googlemusic.ui.home.HomeViewModel
 import com.example.googlemusic.ui.home.HomeViewModelFactory
 import com.example.googlemusic.ui.library.LibraryViewModel
-import com.example.googlemusic.ui.screens.HomeScreen
-import com.example.googlemusic.ui.screens.LibraryScreen
-import com.example.googlemusic.ui.screens.SettingsScreen
+import com.example.googlemusic.ui.player.PlayerViewModel
+import com.example.googlemusic.ui.screens.*
 import com.example.googlemusic.ui.theme.GoogleMusicTheme
 
 class MainActivity : ComponentActivity() {
@@ -49,34 +48,41 @@ fun MainScreen() {
         Screen.Settings
     )
 
-    // Shared ViewModels to persist state across navigation
-    val settingsRepository = SettingsRepository(androidx.compose.ui.platform.LocalContext.current)
-    val authRepository = AuthRepository(androidx.compose.ui.platform.LocalContext.current)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settingsRepository = remember { SettingsRepository(context) }
+    val authRepository = remember { AuthRepository(context) }
     
-    val homeViewModel: HomeViewModel = viewModel(factory = HomeViewModelFactory(settingsRepository))
+    val homeViewModel: HomeViewModel = viewModel(factory = HomeViewModelFactory(context, settingsRepository))
     val authViewModel: AuthViewModel = viewModel(factory = AuthViewModelFactory(authRepository))
     val libraryViewModel: LibraryViewModel = viewModel()
+    val playerViewModel: PlayerViewModel = viewModel()
+
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+    
+    // Determine if we should show the bottom bar
+    val showBottomBar = screens.any { it.route == navBackStackEntry?.destination?.route }
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentDestination = navBackStackEntry?.destination
-                screens.forEach { screen ->
-                    NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = null) },
-                        label = { Text(screen.title) },
-                        selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
-                        onClick = {
-                            navController.navigate(screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+            if (showBottomBar) {
+                NavigationBar {
+                    screens.forEach { screen ->
+                        NavigationBarItem(
+                            icon = { Icon(screen.icon, contentDescription = null) },
+                            label = { Text(screen.title) },
+                            selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
+                            onClick = {
+                                navController.navigate(screen.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -85,15 +91,31 @@ fun MainScreen() {
             modifier = Modifier.padding(innerPadding),
             color = MaterialTheme.colorScheme.background
         ) {
-            NavHost(navController = navController, startDestination = Screen.Home.route) {
+            NavHost(
+                navController = navController, 
+                startDestination = Screen.Home.route
+            ) {
                 composable(Screen.Home.route) {
                     HomeScreen(homeViewModel, authViewModel)
                 }
                 composable(Screen.Library.route) {
-                    LibraryScreen(libraryViewModel, authViewModel)
+                    LibraryScreen(
+                        viewModel = libraryViewModel, 
+                        authViewModel = authViewModel,
+                        onPlayMedia = { list, index ->
+                            playerViewModel.setPlaylist(list, index)
+                            navController.navigate("player")
+                        }
+                    )
                 }
                 composable(Screen.Settings.route) {
                     SettingsScreen(settingsRepository, authViewModel)
+                }
+                composable("player") {
+                    PlayerScreen(
+                        playerViewModel = playerViewModel,
+                        onBack = { navController.popBackStack() }
+                    )
                 }
             }
         }

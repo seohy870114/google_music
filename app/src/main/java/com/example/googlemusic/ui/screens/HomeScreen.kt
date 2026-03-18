@@ -1,5 +1,10 @@
 package com.example.googlemusic.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -27,6 +32,7 @@ fun HomeScreen(homeViewModel: HomeViewModel, authViewModel: AuthViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     
+    // ViewModel의 상태를 관찰
     val videoInfo = homeViewModel.videoInfo
     val isAnalyzing = homeViewModel.isAnalyzing
     val downloadProgress = homeViewModel.downloadProgress
@@ -43,15 +49,16 @@ fun HomeScreen(homeViewModel: HomeViewModel, authViewModel: AuthViewModel) {
         downloadProgress = downloadProgress,
         downloadStatus = downloadStatus,
         errorMessage = errorMessage,
+        // 서버 다운로드가 완료되고, 로그인된 상태일 때만 업로드 버튼 활성화
         canUploadToDrive = isServerDownloadComplete && currentTaskId != null && userAccount != null,
         onUrlChange = { homeViewModel.urlInput = it },
         onAnalyze = { homeViewModel.analyzeUrl(it) },
-        onDownload = { url, format -> homeViewModel.startDownload(context, url, format) },
+        onDownload = { url, format -> homeViewModel.startDownload(url, format) },
         onUploadToDrive = {
             scope.launch {
                 val token = authViewModel.getAccessToken()
                 if (token != null && currentTaskId != null) {
-                    homeViewModel.uploadToDrive(context, currentTaskId, token)
+                    homeViewModel.uploadToDrive(currentTaskId, token)
                 }
             }
         }
@@ -83,6 +90,7 @@ fun HomeContent(
         Text(text = "Download YouTube Media", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
         
+        // [URL 입력창 개선]: TrailingIcon으로 Clear 버튼 추가
         OutlinedTextField(
             value = urlInput,
             onValueChange = onUrlChange,
@@ -148,14 +156,21 @@ fun HomeContent(
                         }
                     }
                     
-                    if (canUploadToDrive) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = onUploadToDrive,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF34A853))
-                        ) {
-                            Text("Upload from Server to Drive")
+                    // [업로드 버튼 조건부 노출]: AnimatedVisibility 사용
+                    AnimatedVisibility(
+                        visible = canUploadToDrive,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        Column {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onUploadToDrive,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF34A853))
+                            ) {
+                                Text("Upload from Server to Drive")
+                            }
                         }
                     }
                 }

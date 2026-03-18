@@ -65,42 +65,134 @@ def progress_hook(d, task_id):
         download_tasks[task_id]["progress"] = 100
         download_tasks[task_id]["status"] = "processing"
 
+import whisper
+import datetime
+
+# Load Whisper model globally to avoid reloading (Warning: consumes memory)
+# Using "base" for a balance between speed and quality. 
+# "tiny" is faster but less accurate.
+whisper_model = None
+
+def get_whisper_model():
+    global whisper_model
+    if whisper_model is None:
+        try:
+            whisper_model = whisper.load_model("base")
+        except Exception as e:
+            print(f"Error loading whisper model: {e}")
+    return whisper_model
+
+def format_timestamp(seconds: float):
+    td = datetime.timedelta(seconds=seconds)
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    millis = int(td.microseconds / 1000)
+    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+def generate_srt(segments):
+    srt_content = ""
+    for i, segment in enumerate(segments, start=1):
+        start = format_timestamp(segment['start'])
+        end = format_timestamp(segment['end'])
+        text = segment['text'].strip()
+        srt_content += f"{i}\n{start} --> {end}\n{text}\n\n"
+    return srt_content
+
 def run_download(url: str, format_type: str, task_id: str):
     task_dir = os.path.join(DOWNLOAD_ROOT, task_id)
     os.makedirs(task_dir, exist_ok=True)
     
+    # Initialize ydl_opts
+    ydl_opts = {
+        'outtmpl': f'{task_dir}/%(id)s.%(ext)s',
+        'overwrites': True,
+        'progress_hooks': [lambda d: progress_hook(d, task_id)],
+    }
+
+    postprocessors = []
+
     if format_type == "mp3":
-        ydl_opts = {
+        ydl_opts.update({
             'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': f'{task_dir}/%(id)s.%(ext)s',
-            'overwrites': True,
-        }
+        })
+        postprocessors.append({
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        })
     else:
-        ydl_opts = {
+        ydl_opts.update({
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': f'{task_dir}/%(id)s.%(ext)s',
-            'overwrites': True,
-        }
-    
-    ydl_opts['progress_hooks'] = [lambda d: progress_hook(d, task_id)]
+            'writesubs': True,
+            'writeautomaticsubs': True,
+            'subtitleslangs': ['ko', 'en'],
+        })
+        postprocessors.append({
+            'key': 'FFmpegSubtitlesConvertor',
+            'format': 'srt',
+        })
+
+    ydl_opts['postprocessors'] = postprocessors
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             video_id = info.get('id')
-            ext = "mp3" if format_type == "mp3" else info.get('ext', 'mp4')
             
+            # Determine final extension and filename
+            # For MP3, it's always .mp3 after post-processing
+            # For MP4, it's usually .mp4 but let's be safe
+            if format_type == "mp3":
+                ext = "mp3"
+            else:
+                ext = info.get('ext', 'mp4')
+            
+            filename = f"{video_id}.{ext}"
+            file_path = os.path.join(task_dir, filename)
+
+            # Verification: If the expected file doesn't exist, check for alternatives
+            if not os.path.exists(file_path):
+                # Check if it stayed as webm or m4a
+                for alt_ext in ['webm', 'm4a', 'mp4', 'mp3']:
+                    alt_path = os.path.join(task_dir, f"{video_id}.{alt_ext}")
+                    if os.path.exists(alt_path):
+                        file_path = alt_path
+                        filename = f"{video_id}.{alt_ext}"
+                        ext = alt_ext
+                        break
+            
+            # Subtitle check
+            srt_filename = f"{video_id}.ko.srt"
+            if not os.path.exists(os.path.join(task_dir, srt_filename)):
+                srt_filename = f"{video_id}.en.srt"
+            
+            has_subtitles = os.path.exists(os.path.join(task_dir, srt_filename))
+            
+            # AI Fallback: Whisper (Works for both MP3 and MP4)
+            if not has_subtitles:
+                download_tasks[task_id]["status"] = "generating_ai_subtitles"
+                model = get_whisper_model()
+                if model and os.path.exists(file_path):
+                    try:
+                        result = model.transcribe(file_path)
+                        srt_content = generate_srt(result['segments'])
+                        srt_filename = f"{video_id}.srt"
+                        with open(os.path.join(task_dir, srt_filename), "w", encoding="utf-8") as f:
+                            f.write(srt_content)
+                        has_subtitles = True
+                    except Exception as whisper_e:
+                        print(f"Whisper failed: {whisper_e}")
+
             download_tasks[task_id].update({
                 "status": "completed",
                 "progress": 100,
                 "title": info.get('title'),
-                "filename": f"{video_id}.{ext}",
-                "ext": ext
+                "filename": filename,
+                "ext": ext,
+                "has_subtitles": has_subtitles,
+                "subtitle_filename": srt_filename if has_subtitles else None
             })
     except Exception as e:
         download_tasks[task_id]["status"] = "error"
@@ -182,7 +274,7 @@ def cleanup_loop():
             for task_id in os.listdir(DOWNLOAD_ROOT):
                 path = os.path.join(DOWNLOAD_ROOT, task_id)
                 if os.path.isdir(path):
-                    # Keep files for at least 30 minutes for cloud upload requests
+                    # Keep files for 30 minutes (1800 seconds)
                     if os.stat(path).st_mtime < now - 1800:
                         try:
                             shutil.rmtree(path)
@@ -190,7 +282,7 @@ def cleanup_loop():
                                 del download_tasks[task_id]
                         except:
                             pass
-        time.sleep(600)
+        time.sleep(600) # Run every 10 minutes
 
 threading.Thread(target=cleanup_loop, daemon=True).start()
 

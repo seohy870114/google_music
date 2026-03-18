@@ -40,7 +40,9 @@ data class StatusResponse(
     val title: String? = null,
     val filename: String? = null,
     val ext: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    val has_subtitles: Boolean = false,
+    val subtitle_filename: String? = null
 )
 
 @Serializable

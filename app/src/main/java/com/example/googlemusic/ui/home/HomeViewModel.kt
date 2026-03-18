@@ -1,8 +1,12 @@
 package com.example.googlemusic.ui.home
 
+import android.content.ContentValues
 import android.content.Context
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
-import android.widget.Toast
+import android.provider.MediaStore
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -15,11 +19,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.ResponseBody
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 
 class HomeViewModel(
+    private val context: Context,
     private val settingsRepository: SettingsRepository,
     private val networkRepository: NetworkRepository = NetworkRepository()
 ) : ViewModel() {
@@ -73,7 +81,7 @@ class HomeViewModel(
         }
     }
 
-    fun startDownload(context: Context, url: String, format: String) {
+    fun startDownload(url: String, format: String) {
         viewModelScope.launch {
             errorMessage = null
             downloadProgress = 0f
@@ -87,7 +95,7 @@ class HomeViewModel(
             try {
                 val response = apiService.downloadMedia(DownloadRequest(url, format))
                 currentTaskId = response.task_id
-                pollStatus(context, response.task_id, apiService)
+                pollStatus(response.task_id, apiService)
             } catch (e: Exception) {
                 errorMessage = "Download failed: ${e.message}"
                 downloadStatus = null
@@ -95,7 +103,7 @@ class HomeViewModel(
         }
     }
 
-    private suspend fun pollStatus(context: Context, taskId: String, apiService: ApiService) {
+    private suspend fun pollStatus(taskId: String, apiService: ApiService) {
         var retryCount = 0
         val maxRetries = 5
 
@@ -112,17 +120,28 @@ class HomeViewModel(
                     else -> "Server: ${statusResponse.status} (${statusResponse.progress.toInt()}%)"
                 }
                 
+                // Automatic trigger when finished
                 if (statusResponse.status == "completed") {
                     isServerDownloadComplete = true
                     val serverFilename = statusResponse.filename
                     val ext = statusResponse.ext ?: "mp4"
                     val userTitle = videoInfo?.title ?: "Downloaded_File"
-                    
+
                     if (serverFilename != null) {
-                        downloadToDevice(context, taskId, serverFilename, userTitle, ext, apiService)
+                        // Automatically bring file to device
+                        downloadToDevice(
+                            taskId, 
+                            serverFilename, 
+                            userTitle, 
+                            ext, 
+                            apiService,
+                            hasSubtitles = statusResponse.has_subtitles,
+                            subtitleFilename = statusResponse.subtitle_filename
+                        )
                     }
                     break
-                } else if (statusResponse.status == "drive_completed") {
+                }
+ else if (statusResponse.status == "drive_completed") {
                     break
                 } else if (statusResponse.status == "error" || statusResponse.status == "drive_error") {
                     errorMessage = statusResponse.message ?: "Server error during task"
@@ -144,69 +163,129 @@ class HomeViewModel(
     }
 
     private fun downloadToDevice(
-        context: Context, 
         taskId: String, 
         serverFilename: String, 
         userTitle: String,
         ext: String,
-        apiService: ApiService
+        apiService: ApiService,
+        hasSubtitles: Boolean = false,
+        subtitleFilename: String? = null
     ) {
         viewModelScope.launch {
             downloadStatus = "Downloading to phone..."
             downloadProgress = 0f
             
             try {
+                val sanitizedTitle = userTitle.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                
+                // 1. Download Media File
                 val response = apiService.downloadFile(taskId, serverFilename)
                 if (response.isSuccessful) {
                     val body = response.body()
                     if (body != null) {
-                        withContext(Dispatchers.IO) {
-                            val sanitizedTitle = userTitle.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-                            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                            
-                            var file = File(downloadsDir, "$sanitizedTitle.$ext")
-                            var count = 1
-                            while (file.exists()) {
-                                file = File(downloadsDir, "$sanitizedTitle ($count).$ext")
-                                count++
-                            }
-
-                            val inputStream = body.byteStream()
-                            val outputStream = FileOutputStream(file)
-                            val buffer = ByteArray(8192)
-                            var bytesRead: Int
-                            val fileSize = body.contentLength()
-                            var totalBytesRead: Long = 0
-
-                            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                                outputStream.write(buffer, 0, bytesRead)
-                                totalBytesRead += bytesRead
-                                if (fileSize > 0) {
-                                    withContext(Dispatchers.Main) {
-                                        downloadProgress = totalBytesRead.toFloat() / fileSize
-                                    }
-                                }
-                            }
-                            outputStream.close()
-                            inputStream.close()
-                        }
-                        downloadStatus = "Success! Saved to Downloads"
-                        Toast.makeText(context, "휴대폰 저장 완료", Toast.LENGTH_SHORT).show()
+                        saveToMediaStore(
+                            fileName = "$sanitizedTitle.$ext",
+                            mimeType = if (ext == "mp3") "audio/mpeg" else "video/mp4",
+                            body = body
+                        )
                     }
                 }
+
+                // 2. Download Subtitle File (if exists)
+                if (hasSubtitles && subtitleFilename != null) {
+                    downloadStatus = "Downloading subtitles..."
+                    val subResponse = apiService.downloadFile(taskId, subtitleFilename)
+                    if (subResponse.isSuccessful) {
+                        val body = subResponse.body()
+                        if (body != null) {
+                            saveToMediaStore(
+                                fileName = "$sanitizedTitle.srt",
+                                mimeType = "application/x-subrip",
+                                body = body,
+                                isSubtitle = true
+                            )
+                        }
+                    }
+                }
+
+                downloadStatus = "Success! Saved to Downloads"
             } catch (e: Exception) {
                 errorMessage = "Device download failed: ${e.message}"
             }
         }
     }
 
-    fun uploadToDrive(context: Context, taskId: String, accessToken: String) {
+    private suspend fun saveToMediaStore(
+        fileName: String,
+        mimeType: String,
+        body: ResponseBody,
+        isSubtitle: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Change directory to Music/google_music
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/google_music")
+            }
+        }
+
+        val collectionUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (mimeType.startsWith("video")) {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            } else if (isSubtitle) {
+                // Subtitles can be stored in Downloads or Files collection
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            }
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI // Fallback
+        }
+
+        val uri = resolver.insert(collectionUri, contentValues)
+        if (uri != null) {
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                val inputStream = body.byteStream()
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                val fileSize = body.contentLength()
+                var totalBytesRead: Long = 0
+
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead
+                    if (!isSubtitle && fileSize > 0) {
+                        withContext(Dispatchers.Main) {
+                            downloadProgress = totalBytesRead.toFloat() / fileSize
+                        }
+                    }
+                }
+            }
+            
+            // For older API or direct file access scenarios, help media scanner
+            try {
+                val musicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "google_music")
+                if (!musicDir.exists()) musicDir.mkdirs()
+                val actualFile = File(musicDir, fileName)
+                MediaScannerConnection.scanFile(context, arrayOf(actualFile.absolutePath), arrayOf(mimeType), null)
+            } catch (e: Exception) {
+                // Ignore scanner errors
+            }
+            
+        } else {
+            throw IOException("Failed to create MediaStore entry for $fileName")
+        }
+    }
+
+    fun uploadToDrive(taskId: String, accessToken: String) {
         viewModelScope.launch {
             val ip = settingsRepository.serverIpFlow.first()
             val apiService = networkRepository.getApiService(ip) ?: return@launch
             try {
                 apiService.uploadToDrive(DriveUploadRequest(taskId, accessToken))
-                pollStatus(context, taskId, apiService)
+                pollStatus(taskId, apiService)
             } catch (e: Exception) {
                 errorMessage = "Drive upload failed: ${e.message}"
             }
